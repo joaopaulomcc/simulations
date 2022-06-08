@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from math import degrees, radians, sin, cos, tan
 import random
 import arcade
 import numpy as np
@@ -395,15 +396,19 @@ if __name__ == "__main__":
     screen_height = 900
     screen_title = "Particles"
 
-    n_particles = 100
+    n_particles = 0
+    n_soft_body_particles = 10
+    soft_body_radius = 0.5
+    sof_body_position = [4.5, 4.5]
     max_speed = 10
 
     start_time = 0.0
-    end_time = 100
-    time_step = 0.1
+    end_time = 10
+    time_step = 0.01
     integration_order = 4
-    playback_speed = 1
+    playback_speed = 0.5
     particle_list = []
+    force_generators = []
 
     print()
     print("PARTICLE SIMULATOR")
@@ -422,38 +427,31 @@ if __name__ == "__main__":
         particle = Particle(position, velocity, mass, "normal")
         particle_list.append(particle)
 
-    particle_a = Particle(
-        np.array([4.5, 4.5, 0.0]), velocity=np.array([-100.0, 0.0, 0.0]), mass=1, category="normal"
-    )
-    particle_b = Particle(
-        np.array([5.5, 5.5, 0.0]), velocity=[0.0, -10.0, 0.0], mass=1, category="normal"
-    )
-    particle_c = Particle(
-        np.array([4.5, 6.5, 0.0]), velocity=[10.0, 0.0, 0.0], mass=1, category="normal"
-    )
-    particle_d = Particle(
-        np.array([3.5, 5.5, 0.0]), velocity=[0.0, 10.0, 0.0], mass=1, category="normal"
-    )
+    soft_body_particles = []
+    for i in range(n_soft_body_particles):
 
-    particle_list += [particle_a, particle_b, particle_c, particle_d]
+        angle = radians(i * 360 / n_soft_body_particles)
+        x_coord = sof_body_position[0] + cos(angle)
+        y_coord = sof_body_position[0] + sin(angle)
+        position = np.array([x_coord, y_coord, 0.0])
+        velocity = np.array([10, -10, 0])
 
-    spring_b_c = Spring(100.0, 1.0, particle_b, particle_c)
-    spring_c_d = Spring(100.0, 1.0, particle_c, particle_d)
-    spring_d_a = Spring(100.0, 1.0, particle_d, particle_a)
-    spring_a_c = Spring(100.0, 1.0, particle_a, particle_c)
-    spring_a_b = Spring(100.0, 1.0, particle_a, particle_b)
-    spring_b_d = Spring(100.0, 1.0, particle_b, particle_d)
+        soft_body_particles.append(Particle(position, velocity, mass, category="normal"))
 
-    gravity = GravityField(9.81, np.array([0.0, -1.0, 0.0]))
-    force_generators = [
-        gravity,
-        spring_b_c,
-        spring_a_b,
-        spring_c_d,
-        spring_d_a,
-        spring_a_c,
-        spring_b_d,
-    ]
+    particle_list += soft_body_particles
+
+    soft_body_springs = []
+    for i, particle in enumerate(soft_body_particles):
+
+        for j in range(n_soft_body_particles):
+
+            if i != j:
+                soft_body_springs.append(Spring(50.0, 0.5, soft_body_particles[i], soft_body_particles[j]))
+
+    force_generators += soft_body_springs
+
+    gravity = GravityField(1.0, np.array([0.0, -1.0, 0.0]))
+    force_generators.append(gravity)
 
     world_height = screen_height / WORLD_TO_SCREEN_FACTOR
     world_width = screen_width / WORLD_TO_SCREEN_FACTOR
@@ -461,7 +459,7 @@ if __name__ == "__main__":
     ground = Wall(
         np.array([world_width / 3, 0.0, 0.0]),
         np.array([2 * world_width / 3, 0.0, 0.0]),
-        0.85,
+        1.0,
     )
 
     right_ramp = Wall(
