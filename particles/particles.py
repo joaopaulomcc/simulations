@@ -5,7 +5,7 @@ import numpy as np
 
 from rich.progress import track
 
-WORLD_TO_SCREEN_FACTOR = 1
+WORLD_TO_SCREEN_FACTOR = 100
 SPRITE_SCALE = 0.2
 
 
@@ -17,16 +17,21 @@ class Particle:
         self.position = position
         self.velocity = velocity
         self.mass = mass
+        self.category = category
         self.force = np.zeros(3)
         self.index = 0
-        self.category = category
 
 
 class ForceGenerator:
     def __init__(self):
         pass
 
-    def update_force(self, particle_list: list[Particle]):
+    def update_force(
+        self,
+        particle_list: list[Particle],
+        state_vector: np.array,
+        force_vector: np.array,
+    ):
         pass
 
 
@@ -74,49 +79,55 @@ class Wall:
 class ParticleSystem:
     def __init__(
         self,
-        particle_list: list[Particle],
+        particle_list: list[Particle] = None,
         force_generators: list[ForceGenerator] = None,
         walls: list[Wall] = None,
     ):
 
         self.particle_list = particle_list
-        self.n_particles = len(particle_list)
         self.force_generators = force_generators
         self.walls = walls
+
+        self.n_particles = len(particle_list)
         self.state_vector = np.zeros(self.n_particles * 6)
+        self.force_vector = np.zeros((self.n_particles, 3))
 
         for i, particle in enumerate(self.particle_list):
             j = i * 6
+            particle.index = i
             self.state_vector[j : j + 3] = particle.position
             self.state_vector[j + 3 : j + 6] = particle.velocity
-            particle.index = i
 
-    def calculate_accelerations(self, initial_state_vector: np.array, time: float):
+    def calculate_accelerations(self, state_vector: np.array, time: float):
 
-        # Clear the force acumulators
-        for particle in self.particle_list:
-            particle.force = np.zeros(3)
+        # Clear the force acumulator
+        self.force_vector = np.zeros((self.n_particles, 3))
 
         # Call the force generators to update the forces
         for force_generator in self.force_generators:
 
-            force_generator.update_force(self.particle_list)
+            self.force_vector = force_generator.update_force(
+                self.particle_list, state_vector, self.force_vector
+            )
 
         acceleration_vector = np.zeros(self.n_particles * 6)
-        for i, particle in enumerate(self.particle_list):
+
+        for particle in self.particle_list:
 
             if particle.category != "fixed":
-                j = i * 6
-                acceleration_vector[j : j + 3] = particle.velocity
-                acceleration_vector[j + 3 : j + 6] = particle.force / particle.mass
+                j = particle.index * 6
+                acceleration_vector[j : j + 3] = state_vector[j + 3 : j + 6]
+                acceleration_vector[j + 3 : j + 6] = (
+                    self.force_vector[particle.index] / particle.mass
+                )
 
         return acceleration_vector
 
     def update_particles(self, new_state_vector: float):
 
-        for i, particle in enumerate(self.particle_list):
+        for particle in self.particle_list:
 
-            j = i * 6
+            j = particle.index * 6
             particle.position = new_state_vector[j : j + 3]
             particle.velocity = new_state_vector[j + 3 : j + 6]
 
@@ -124,8 +135,8 @@ class ParticleSystem:
 
             wall.collision(self.particle_list)
 
-        for i, particle in enumerate(self.particle_list):
-            j = i * 6
+        for particle in self.particle_list:
+            j = particle.index * 6
             self.state_vector[j : j + 3] = particle.position
             self.state_vector[j + 3 : j + 6] = particle.velocity
 
@@ -138,14 +149,20 @@ class GravityField(ForceGenerator):
         self.gravity_acceleration_m_s2 = gravity_acceleration_m_s2
         self.gravity_vector = gravity_vector / np.linalg.norm(gravity_vector)
 
-    def update_force(self, particle_list: list[Particle]):
+    def update_force(
+        self,
+        particle_list: list[Particle],
+        state_vector: np.array,
+        force_vector: np.array,
+    ):
 
         for particle in particle_list:
 
-            particle.force = (
-                particle.force
-                + particle.mass * self.gravity_acceleration_m_s2 * self.gravity_vector
+            force_vector[particle.index] += (
+                particle.mass * self.gravity_acceleration_m_s2 * self.gravity_vector
             )
+
+        return force_vector
 
 
 class Spring(ForceGenerator):
@@ -164,29 +181,48 @@ class Spring(ForceGenerator):
         self.vector = particle_b.position - particle_a.position
         self.rest_length = np.linalg.norm(self.vector)
 
-    def update_force(self, particle_list: list[Particle]):
+    def update_force(
+        self,
+        particle_list: list[Particle],
+        state_vector: np.array,
+        force_vector: np.array,
+    ):
 
-        new_vector = self.particle_b.position - self.particle_a.position
+        particle_a_position = state_vector[
+            self.particle_a.index * 6 : self.particle_a.index * 6 + 3
+        ]
+        particle_a_velocity = state_vector[
+            self.particle_a.index * 6 + 3 : self.particle_a.index * 6 + 6
+        ]
+
+        particle_b_position = state_vector[
+            self.particle_b.index * 6 : self.particle_b.index * 6 + 3
+        ]
+        particle_b_velocity = state_vector[
+            self.particle_b.index * 6 + 3 : self.particle_b.index * 6 + 6
+        ]
+
+        new_vector = particle_b_position - particle_a_position
         new_length = np.linalg.norm(new_vector)
+
         direction_vector = new_vector / new_length
 
         extension = new_length - self.rest_length
-        relative_velocity = self.particle_b.velocity - self.particle_a.velocity
+        relative_velocity = particle_b_velocity - particle_a_velocity
         damping_velocity = np.dot(relative_velocity, direction_vector)
 
         spring_force = extension * self.spring_constant
         damping_force = damping_velocity * self.damping_coefficient
 
-        self.particle_a.force = (
-            self.particle_a.force
-            + spring_force * direction_vector
-            + damping_force * direction_vector
+        force_vector[self.particle_a.index] += (
+            spring_force * direction_vector + damping_force * direction_vector
         )
-        self.particle_b.force = (
-            self.particle_a.force
-            - spring_force * direction_vector
-            - damping_force * direction_vector
+
+        force_vector[self.particle_b.index] += (
+            -spring_force * direction_vector - damping_force * direction_vector
         )
+
+        return force_vector
 
 
 def integrator(
@@ -194,6 +230,7 @@ def integrator(
     derivative_function: Callable[[np.array], np.array],
     start_time: float,
     time_step: float,
+    order: int = 1,
 ):
 
     x0 = initial_state_vector
@@ -201,7 +238,24 @@ def integrator(
     t0 = start_time
     h = time_step
 
-    return x0 + h * f(x0, t0)
+    k1 = h * f(x0, t0)
+
+    if order == 1:
+        return x0 + k1
+
+    if order == 2:
+        k2 = h * f(x0 + k1 / 2, t0 + h / 2)
+        return x0 + k2
+
+    if order == 4:
+        k2 = h * f(x0 + k1 / 2, t0 + h / 2)
+        k3 = h * f(x0 + k2 / 2, t0 + h / 2)
+        k4 = h * f(x0 + k3, t0 + h)
+
+        return x0 + (1 / 6) * k1 + (1 / 3) * k2 + (1 / 3) * k3 + (1 / 6) * k4
+
+    if order not in [1, 2, 4]:
+        raise ValueError
 
 
 def run_particle_simulation(
@@ -209,6 +263,7 @@ def run_particle_simulation(
     start_time: float,
     end_time: float,
     time_step: float,
+    integration_order: int = 1,
 ):
 
     t0 = start_time
@@ -225,7 +280,7 @@ def run_particle_simulation(
 
         history.append([t0, x0])
 
-        x1 = integrator(x0, f, t0, h)
+        x1 = integrator(x0, f, t0, h, integration_order)
         t1 = t0 + h
         x0 = particle_system.update_particles(x1)
         t0 = t1
@@ -278,10 +333,10 @@ class Window(arcade.Window):
         for wall in particle_system.walls:
 
             wall_line = arcade.create_line(
-                wall.point_a[0],
-                wall.point_a[1],
-                wall.point_b[0],
-                wall.point_b[1],
+                wall.point_a[0] * WORLD_TO_SCREEN_FACTOR,
+                wall.point_a[1] * WORLD_TO_SCREEN_FACTOR,
+                wall.point_b[0] * WORLD_TO_SCREEN_FACTOR,
+                wall.point_b[1] * WORLD_TO_SCREEN_FACTOR,
                 color=arcade.color.WHITE,
                 line_width=2,
             )
@@ -289,20 +344,21 @@ class Window(arcade.Window):
 
     def on_update(self, delta_time: float):
 
-        step = int(self.playback_speed * (delta_time / self.time_step))
+        step = self.playback_speed * (delta_time / self.time_step)
+
         self.time_record = self.time_record + step
 
         if self.time_record > (len(self.history) - 1):
             self.time_record = 0
 
-        instant, state = self.history[self.time_record]
+        instant, state = self.history[int(self.time_record)]
         self.time_label.text = f"Time: {instant:.4f}s"
 
         for i, particle_sprite in enumerate(self.sprites_list):
 
             j = i * 6
-            particle_sprite.center_x = state[j]
-            particle_sprite.center_y = state[j + 1]
+            particle_sprite.center_x = state[j] * WORLD_TO_SCREEN_FACTOR
+            particle_sprite.center_y = state[j + 1] * WORLD_TO_SCREEN_FACTOR
 
         self.springs_list = arcade.ShapeElementList()
 
@@ -314,10 +370,10 @@ class Window(arcade.Window):
                 particle_b_index = force_generator.particle_b.index
 
                 spring_line = arcade.create_line(
-                    state[particle_a_index * 6],
-                    state[particle_a_index * 6 + 1],
-                    state[particle_b_index * 6],
-                    state[particle_b_index * 6 + 1],
+                    state[particle_a_index * 6] * WORLD_TO_SCREEN_FACTOR,
+                    state[particle_a_index * 6 + 1] * WORLD_TO_SCREEN_FACTOR,
+                    state[particle_b_index * 6] * WORLD_TO_SCREEN_FACTOR,
+                    state[particle_b_index * 6 + 1] * WORLD_TO_SCREEN_FACTOR,
                     line_width=3,
                     color=arcade.color.RED_ORANGE,
                 )
@@ -339,92 +395,98 @@ if __name__ == "__main__":
     screen_height = 900
     screen_title = "Particles"
 
-    n_particles = 0
-    max_speed = 100
+    n_particles = 100
+    max_speed = 10
 
     start_time = 0.0
     end_time = 100
-    time_step = 0.01
-    playback_speed = 5
+    time_step = 0.1
+    integration_order = 4
+    playback_speed = 1
     particle_list = []
 
     print()
     print("PARTICLE SIMULATOR")
     print()
 
+    mass = 1
+
     for _ in range(n_particles):
 
-        position = np.array([screen_width / 2, screen_height * 0.7, 0.0])
+        position = np.array([9 * 0.5, 9 * 0.7, 0.0])
 
         angle = random.random() * 2 * np.pi
         speed = random.random() * max_speed
         velocity = np.array([np.cos(angle) * speed, np.sin(angle) * speed, 0.0])
-        mass = 1
 
-        particle = Particle(position, velocity, mass)
+        particle = Particle(position, velocity, mass, "normal")
         particle_list.append(particle)
 
     particle_a = Particle(
-        np.array([450, 450, 0.0]), velocity=np.zeros(3), mass=1, category="normal"
+        np.array([4.5, 4.5, 0.0]), velocity=np.array([-100.0, 0.0, 0.0]), mass=1, category="normal"
     )
     particle_b = Particle(
-        np.array([550, 450, 0.0]), velocity=np.zeros(3), mass=1, category="normal"
+        np.array([5.5, 5.5, 0.0]), velocity=[0.0, -10.0, 0.0], mass=1, category="normal"
     )
     particle_c = Particle(
-        np.array([550, 550, 0.0]), velocity=np.zeros(3), mass=1, category="normal"
+        np.array([4.5, 6.5, 0.0]), velocity=[10.0, 0.0, 0.0], mass=1, category="normal"
     )
     particle_d = Particle(
-        np.array([450, 550, 0.0]), velocity=np.zeros(3), mass=1, category="normal"
+        np.array([3.5, 5.5, 0.0]), velocity=[0.0, 10.0, 0.0], mass=1, category="normal"
     )
 
-    particle_list = [particle_a, particle_b, particle_c, particle_d]
+    particle_list += [particle_a, particle_b, particle_c, particle_d]
 
-    spring_a_b = Spring(10000.0, 10000, particle_a, particle_b)
-    spring_b_c = Spring(10000.0, 10000, particle_b, particle_c)
-    spring_c_d = Spring(10000.0, 10000, particle_c, particle_d)
-    spring_d_a = Spring(10000.0, 10000, particle_d, particle_a)
-    spring_a_c = Spring(10000.0, 10000, particle_a, particle_c)
-    spring_b_d = Spring(10000.0, 10000, particle_b, particle_d)
+    spring_b_c = Spring(100.0, 1.0, particle_b, particle_c)
+    spring_c_d = Spring(100.0, 1.0, particle_c, particle_d)
+    spring_d_a = Spring(100.0, 1.0, particle_d, particle_a)
+    spring_a_c = Spring(100.0, 1.0, particle_a, particle_c)
+    spring_a_b = Spring(100.0, 1.0, particle_a, particle_b)
+    spring_b_d = Spring(100.0, 1.0, particle_b, particle_d)
 
     gravity = GravityField(9.81, np.array([0.0, -1.0, 0.0]))
     force_generators = [
         gravity,
-        spring_a_b,
         spring_b_c,
+        spring_a_b,
         spring_c_d,
         spring_d_a,
         spring_a_c,
         spring_b_d,
     ]
+
+    world_height = screen_height / WORLD_TO_SCREEN_FACTOR
+    world_width = screen_width / WORLD_TO_SCREEN_FACTOR
+
     ground = Wall(
-        np.array([screen_width / 3, 2.0, 0.0]),
-        np.array([2 * screen_width / 3, 2.0, 0.0]),
+        np.array([world_width / 3, 0.0, 0.0]),
+        np.array([2 * world_width / 3, 0.0, 0.0]),
         0.85,
     )
 
     right_ramp = Wall(
-        np.array([2 * screen_width / 3, 2.0, 0.0]),
-        np.array([screen_width - 2, screen_height / 3, 0.0]),
+        np.array([2 * world_width / 3, 0.0, 0.0]),
+        np.array([world_width, world_height / 3, 0.0]),
         1.0,
     )
     ceiling = Wall(
-        np.array([screen_width, screen_height - 2, 0.0]),
-        np.array([0.0, screen_height - 2, 0.0]),
+        np.array([world_width, world_height, 0.0]),
+        np.array([0.0, world_width, 0.0]),
         1.0,
     )
     right_wall = Wall(
-        np.array([screen_width - 2, screen_height / 3, 0.0]),
-        np.array([screen_width - 2, screen_height - 2, 0.0]),
+        np.array([world_width, world_height / 3, 0.0]),
+        np.array([world_width, world_height, 0.0]),
         1.0,
     )
     left_wall = Wall(
-        np.array([2.0, screen_height - 2, 0.0]),
-        np.array([2.0, screen_height / 3, 0.0]),
+        np.array([0.0, world_height, 0.0]),
+        np.array([0.0, world_height / 3, 0.0]),
         1.0,
     )
     left_ramp = Wall(
-        np.array([2.0, screen_height / 3, 0.0]),
-        np.array([screen_width / 3, 2.0, 0.0]),
+        np.array([0.0, world_height / 3, 0.0]),
+        np.array([world_width / 3, 0.0, 0.0]),
         1.0,
     )
     walls = [ground, right_ramp, right_wall, ceiling, left_wall, left_ramp]
@@ -432,7 +494,7 @@ if __name__ == "__main__":
     my_particle_system = ParticleSystem(particle_list, force_generators, walls)
 
     history = run_particle_simulation(
-        my_particle_system, start_time, end_time, time_step
+        my_particle_system, start_time, end_time, time_step, integration_order
     )
 
     with open("history.csv", "w") as outfile:
